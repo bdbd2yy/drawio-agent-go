@@ -1,0 +1,21 @@
+app:
+  name: ai-agent-scaffold-go
+  env: local
+server:
+  addr: ":8091"
+database:
+  required: false
+  dsn: "root:123456@tcp(127.0.0.1:13306)/ai-agent-scaffold-go?charset=utf8mb4&parseTime=True&loc=Local"
+redis:
+  required: false
+  addr: "127.0.0.1:16379"
+  password: ""
+  db: 0
+llm:
+  # OpenAI 兼容上游每次请求的整体超时；画图等多步 Agent 流程建议放宽
+  # 支持 Go time.ParseDuration 格式：30s / 2m / 5m / 1h，留空走默认 5m
+  request-timeout: 5m
+agent:
+  config-paths:
+    - configs/agent/only-one-agent.yaml
+    - configs/agent/agent-draw-io.yaml

@@ -1,0 +1,17 @@
+# Local secret env files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+
+# Build output
+/bin/
+*.test
+*.out
+
+# Frontend artefacts
+frontend/.next/
+frontend/node_modules/

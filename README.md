@@ -26,6 +26,10 @@ AI Agent Scaffold Go 是一个面向 Agent 应用开发的 Go 脚手架，围绕
 - [开发与验证](#开发与验证)
 - [联系作者](#联系作者)
 
+## 项目展示
+
+![](https://img-store-cloud.oss-cn-hangzhou.aliyuncs.com/f0000e4f53b2e625241c6e197d627411.png)
+
 ## 项目讲解文档
 
 - 地址：[项目文档](https://my.feishu.cn/wiki/FbISwBnZPiGx0vkxyHFc8a1enig?fromScene=spaceOverview)

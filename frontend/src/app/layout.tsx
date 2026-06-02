@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Agent-Draw-IO",
-  description: "智能体交互绘图 @小傅哥",
+  description: "智能体交互绘图 @peakxy",
 };
 
 import Script from "next/script";

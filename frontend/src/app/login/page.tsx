@@ -67,7 +67,7 @@ export default function Login() {
             </div>
             <div className="flex flex-col gap-1">
               <strong className="text-base leading-[1.1] tracking-[0.2px] text-[rgba(255,255,255,0.92)]">
-                AI 智能体工作台 By Ai Agent Scaffold - @小傅哥
+                AI 智能体工作台 By Ai Agent Scaffold - @peakxy
               </strong>
               <span className="text-xs text-[rgba(255,255,255,0.56)]">更快搭建 · 更稳运行 · 更易运维</span>
             </div>

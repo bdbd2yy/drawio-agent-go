@@ -1,34 +1,51 @@
-# AI Agent Scaffold Go
+<div align="center">
+
+# Drawio-Agent-Go
+
+**基于 Go Agent 应用脚手架构建的 Draw.io 智能体，通过多轮对话绘制并持续优化理想中的架构图。**
 
 [![Go](https://img.shields.io/badge/Go-1.25.6+-00ADD8?style=flat-square&logo=go)](https://go.dev/)
-[![Gin](https://img.shields.io/badge/Gin-HTTP-00ACD7?style=flat-square)](https://gin-gonic.com/)
-[![Google ADK Go](https://img.shields.io/badge/Google%20ADK-Go-4285F4?style=flat-square)](https://google.github.io/adk-docs/)
-[![Eino](https://img.shields.io/badge/Eino-Agent-111827?style=flat-square)](https://github.com/cloudwego/eino)
-[![GORM](https://img.shields.io/badge/GORM-MySQL-2D3748?style=flat-square)](https://gorm.io/)
-[![Redis](https://img.shields.io/badge/Redis-Optional-DC382D?style=flat-square&logo=redis)](https://redis.io/)
-[![Next.js](https://img.shields.io/badge/Next.js-Demo%20UI-000000?style=flat-square&logo=nextdotjs)](https://nextjs.org/)
+[![Gin](https://img.shields.io/badge/Gin-1.12-00ACD7?style=flat-square&logo=gin)](https://gin-gonic.com/)
+[![Next.js](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=nextdotjs)](https://nextjs.org/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=000000)](https://react.dev/)
+[![Draw.io](https://img.shields.io/badge/Draw.io-AI%20Diagramming-F08705?style=flat-square&logo=diagramsdotnet&logoColor=white)](https://www.drawio.com/)
+[![OpenAI Compatible](https://img.shields.io/badge/LLM-OpenAI%20Compatible-412991?style=flat-square&logo=openai)](https://platform.openai.com/docs/api-reference/chat)
 
-AI Agent Scaffold Go 是一个面向 Agent 应用开发的 Go 脚手架，围绕 Gin、Eino、Google ADK Go、GORM、MySQL、Redis 构建，重点提供清晰的 DDD 分层、配置驱动的 Agent 装配、多 Agent 工作流编排和 HTTP 运行时接口。仓库同时附带一个基于 Next.js 的 `frontend/` 子项目，作为对接后端 API 的示例前端，这个场景是通过drawio组件搭建的，旨在通过多轮对话来画出理想中的流程图。
+[项目展示](#项目展示) · [项目讲解文档](#项目讲解文档) · [快速开始](#快速开始) · [工作原理](#工作原理) · [架构设计](#架构设计) · [HTTP API](#http-api)
 
-## 目录
+</div>
 
-- [核心能力](#核心能力)
-- [技术栈](#技术栈)
-- [项目结构](#项目结构)
-- [后端架构](#后端架构)
-- [启动流程](#启动流程)
-- [Armory 装配流程](#armory-装配流程)
-- [运行时对话流程](#运行时对话流程)
-- [快速开始](#快速开始)
-- [配置说明](#配置说明)
-- [HTTP API](#http-api)
-- [前端启动](#前端启动)
-- [开发与验证](#开发与验证)
-- [联系作者](#联系作者)
+## 项目简介
+
+Drawio-Agent-Go 是一个基于 Agent 应用开发的 Go 脚手架搭建的 Draw.io 智能体，可通过多轮对话来绘制理想中的架构图。
+
+用户只需要用自然语言描述想法，系统就会通过“需求分析、图形生成、结果检查”三个 Agent 协作，把需求转换为可编辑的 Draw.io XML，并在网页画布中直接渲染。开启“携带画布上下文”后，还可以继续通过对话调整节点、补充链路或优化布局。
 
 ## 项目展示
 
-![](https://img-store-cloud.oss-cn-hangzhou.aliyuncs.com/f0000e4f53b2e625241c6e197d627411.png)
+<p align="center">
+  <img src="./docs/images/项目运行图.jpg" width="100%" alt="Drawio-Agent-Go 项目运行界面" />
+</p>
+
+前端工作台由三部分组成：左侧管理绘图记录，中间嵌入 Draw.io 画布，右侧通过 AI 对话生成或修改图表。
+
+| 绘图记录 | Draw.io 画布 | AI 对话区 |
+| --- | --- | --- |
+| 创建、切换、重命名和删除会话 | 加载 Agent 生成的 XML，并支持手动编辑与自动保存 | 选择 Agent、输入绘图需求、携带当前画布上下文 |
+
+可以从一段简单的自然语言开始：
+
+```text
+请绘制一个微服务电商系统架构图，包含 API Gateway、用户服务、
+商品服务、订单服务、Redis、MySQL 和 Kafka，并标注主要调用关系。
+```
+
+生成初稿后，开启“携带画布上下文”，继续输入：
+
+```text
+在现有架构图中增加库存服务和支付服务，将异步事件统一接入 Kafka，
+并调整布局，避免节点和连线重叠。
+```
 
 ## 项目讲解文档
 
@@ -37,105 +54,215 @@ AI Agent Scaffold Go 是一个面向 Agent 应用开发的 Go 脚手架，围绕
 
 ## 核心能力
 
-- **配置驱动 Agent**：通过 `configs/agent/*.yaml` 声明模型 API、ChatModel、MCP 工具、skills、LLM Agent、workflow Agent 和 Runner。
-- **Armory 装配链**：按 `Root -> AiAPI -> ChatModel -> Agent -> AgentWorkflow -> Runner` 的顺序装配运行时对象。
-- **多 Agent 工作流**：支持 `loop`、`parallel`、`sequential` 三类 workflow Agent，串行工作流可通过 `output-key` 把上一步结果注入下一步指令。
-- **HTTP 运行时接口**：提供 Agent 列表、创建会话、同步聊天、SSE 流式聊天接口。
-- **OpenAI-compatible 模型调用**：基础设施层直接构造 Chat Completions 请求，支持普通响应和 `stream: true`。
-- **MCP SSE 工具调用**：装配阶段注册 SSE MCP 工具，运行时在模型触发 tool call 后执行 JSON-RPC `tools/call`，再把工具结果回灌给模型。
-- **Skill 资源扫描**：支持扫描 `SKILL.md`，把 skill 元数据转换为模型可见工具。
-- **分层边界清晰**：领域层依赖本地 `ports`，避免直接耦合 Gin、GORM、Redis、模型 provider 和 ADK 实现。
+| 能力 | 说明 |
+| --- | --- |
+| 自然语言绘图 | 将架构描述、业务流程或调用关系转换为合法的 Draw.io `mxfile` XML |
+| 三 Agent 协作 | `agent_analyst` 分析需求，`agent_drawer` 生成图形，`agent_reviewer` 检查并优化结果 |
+| 多轮迭代修改 | 前端可把当前画布 XML 随新指令一起提交，让 Agent 在已有图表基础上继续修改 |
+| Draw.io 深度集成 | 基于 `react-drawio` 嵌入真实画布，支持手动编辑、自动保存和 SVG 导出 |
+| 多会话绘图记录 | 浏览器本地保存聊天消息和图表 XML，支持创建、切换、重命名和删除绘图记录 |
+| 配置驱动装配 | 通过 YAML 声明模型、Agent、Workflow、Runner、MCP 工具和 Skill 资源 |
+| OpenAI-compatible | 模型层直接调用兼容 Chat Completions 的服务，方便对接不同模型提供方 |
+| MCP 工具扩展 | 支持配置 SSE MCP 工具，在需求分析阶段按需检索和补充绘图信息 |
+| Go 工程化分层 | 使用端口与适配器组织领域、应用、基础设施和 HTTP 入站层，便于替换外部依赖 |
+
+> [!NOTE]
+> 当前“多轮修改”主要由前端保存绘图记录，并在用户开启“携带画布上下文”后提交当前 XML 实现；它不是服务端长期记忆系统。
+
+## 工作原理
+
+```mermaid
+flowchart LR
+    User["用户描述绘图需求"] --> Web["Next.js 对话工作台"]
+    Web --> API["Go HTTP API"]
+    API --> Analyst["agent_analyst<br/>理解需求并补全关系"]
+    Analyst --> Drawer["agent_drawer<br/>生成 Draw.io XML"]
+    Drawer --> Reviewer["agent_reviewer<br/>校验语法并优化布局"]
+    Reviewer --> XML["最终 mxfile XML"]
+    XML --> Canvas["react-drawio 画布"]
+    Canvas --> Edit["人工编辑 / SVG 导出"]
+    Canvas -. "携带当前画布上下文" .-> Web
+```
+
+### 三 Agent 分工
+
+| Agent | 输入 | 职责 | 输出 |
+| --- | --- | --- | --- |
+| `agent_analyst` | 用户最新指令 | 判断图表类型，整理节点、关系、调用顺序和布局要求，必要时调用 MCP 工具 | `analysis_result` |
+| `agent_drawer` | `analysis_result` | 生成包含 `mxfile`、`diagram`、`mxGraphModel` 和 `mxCell` 的 Draw.io XML | `draft_diagram` |
+| `agent_reviewer` | `draft_diagram` | 检查标签、属性、节点引用和布局，修复错误并输出最终 XML | `final_result` |
+
+默认 Runner 使用串行工作流 `sequential_draw_process`：
+
+```text
+agent_analyst -> agent_drawer -> agent_reviewer
+```
+
+仓库同时保留了 `loop` 和 `parallel` Workflow 的配置示例，便于继续实验循环优化和多方案生成。
+
+## 快速开始
+
+### 环境要求
+
+- Go 1.25.6+
+- Node.js 20+ 和 npm
+- 一个 OpenAI-compatible Chat Completions 服务
+- 可访问的 MCP SSE 服务；如果不使用 MCP，需要从启用的 Agent 配置中移除对应 `tool-mcp-list`
+- Docker，可选，仅用于本地 MySQL/Redis 参考环境
+
+### 1. 克隆项目
+
+```bash
+git clone https://github.com/peakxy/drawio-agent-go.git
+cd drawio-agent-go
+```
+
+### 2. 安装后端依赖
+
+```bash
+go mod download
+go build ./...
+```
+
+### 3. 准备环境变量
+
+```bash
+cp .env.example .env
+```
+
+至少需要替换以下配置：
+
+```dotenv
+OPENAI_BASE_URL=https://api.example.com/
+OPENAI_API_KEY=replace-with-your-key
+
+BAIDU_SEARCH_MCP_BASE_URI=https://example.com/mcp/
+BAIDU_SEARCH_MCP_SSE_ENDPOINT=sse?api_key=replace-with-your-key
+```
+
+说明：
+
+- `OPENAI_BASE_URL` 可以指向 OpenAI 官方服务或兼容 Chat Completions 的模型服务。
+- 默认启用的 Agent YAML 声明了百度搜索 SSE MCP，因此需要提供可用的 MCP 地址。
+- 如果暂时不需要 MCP，请从实际启用的 `configs/agent/*.yaml` 中移除 `tool-mcp-list`，不要保留空的 `base-uri`。
+- `.env` 中的变量会在加载 Agent YAML 时展开，支持 `${VAR}` 和 `${VAR:-default}`。
+
+### 4. 启动后端
+
+```bash
+go run ./cmd/server
+```
+
+也可以显式指定环境变量文件和应用配置：
+
+```bash
+go run ./cmd/server -env .env -config configs/application.yaml
+```
+
+默认监听 `:8091`，可以通过健康检查确认服务状态：
+
+```bash
+curl http://localhost:8091/healthz
+```
+
+```json
+{"status":"ok"}
+```
+
+### 5. 启动前端
+
+打开另一个终端：
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+访问 [http://localhost:3000](http://localhost:3000)，演示账号和密码均为：
+
+```text
+admin / admin
+```
+
+登录后选择 **AI交互式绘图智能体**，输入绘图需求即可开始。
+
+> [!IMPORTANT]
+> `admin / admin` 只是前端演示登录，数据保存在浏览器 Cookie 中，不包含生产环境所需的服务端鉴权能力。
+
+## 使用指南
+
+### 创建一张新图
+
+1. 点击左侧新增按钮创建绘图记录。
+2. 在右侧选择“AI交互式绘图智能体”。
+3. 描述图表类型、关键节点、节点关系和期望布局。
+4. 等待三 Agent 工作流完成，最终 XML 会自动加载到中间画布。
+5. 在 Draw.io 中继续手动编辑，或点击 `Export` 导出 SVG。
+
+### 基于当前画布继续修改
+
+1. 打开右侧输入框上方的“携带画布上下文”。
+2. 输入新的修改指令，例如“增加 Redis 缓存层，并将所有缓存访问改为虚线”。
+3. 前端会导出当前 Draw.io XML，并与新指令一起发送给 Agent。
+4. Agent 返回新的 XML 后，前端更新当前画布和本地绘图记录。
+
+### 管理绘图记录
+
+- 单击左侧记录切换会话和画布。
+- 双击记录名称进行重命名。
+- 点击删除按钮移除记录。
+- 聊天消息、后端会话 ID 和 Draw.io XML 会保存在浏览器 `localStorage`。
 
 ## 技术栈
 
 | 领域 | 选型 |
 | --- | --- |
 | 后端语言 | Go 1.25.6+ |
-| HTTP 框架 | Gin |
-| Agent 运行与插件 | Google ADK Go |
-| 模型/工具抽象依赖 | Eino 相关依赖已纳入模块；当前模型调用由本地 OpenAI-compatible adapter 完成 |
-| 配置 | YAML + dotenv + 环境变量占位符 |
+| HTTP 框架 | Gin 1.12 |
+| Agent 配置与装配 | YAML、Google ADK Go 插件接口、自定义 Runner/Agent adapter |
+| 模型抽象 | Eino 相关依赖 + 本地 OpenAI-compatible adapter |
 | 模型协议 | OpenAI-compatible Chat Completions |
-| 工具协议 | MCP SSE；stdio/local 配置结构已存在 |
-| 持久化适配器 | GORM + MySQL，当前默认启动路径未强制启用 |
-| 缓存适配器 | go-redis，当前默认启动路径未强制启用 |
+| 工具协议 | MCP SSE；同时保留 local/stdio 配置结构 |
+| 持久化适配器 | GORM + MySQL，可选，默认启动链路未启用 |
+| 缓存适配器 | go-redis，可选，默认启动链路未启用 |
 | 日志 | zap + Gin logger |
-| 前端 | Next.js 16 + React 19 + Tailwind CSS + react-drawio |
+| 前端 | Next.js 16、React 19、Tailwind CSS 4、react-drawio 1.0.7 |
 
-## 项目结构
+## 架构设计
 
-```text
-ai-agent-scaffold-go
-├── cmd/server
-│   └── main.go                         # 后端入口：加载 .env、读取配置、构建应用、启动 HTTP 服务
-├── configs
-│   ├── application.yaml                # 应用、端口、LLM 超时、Agent 配置路径、可选 DB/Redis 设置
-│   └── agent
-│       ├── only-one-agent.yaml         # 单 Agent 示例
-│       ├── agent-draw-io.yaml          # draw.io 多 Agent 工作流示例
-│       └── skills/                     # skill 资源，按 SKILL.md 扫描
-├── deployments
-│   ├── docker-compose.yml              # 本地 MySQL/Redis 参考服务
-│   ├── mysql/my.cnf
-│   └── redis/redis.conf
-├── frontend                            # Next.js draw.io 示例前端
-├── internal
-│   ├── api
-│   │   ├── dto                         # HTTP 请求/响应 DTO
-│   │   └── response                    # code/info/data 统一响应封装
-│   ├── app
-│   │   ├── bootstrap                   # 应用装配：配置表加载、Armory、ChatService、Gin 路由
-│   │   └── config                      # application.yaml 与 Agent YAML 加载/校验
-│   ├── domain
-│   │   ├── agent
-│   │   │   ├── model                   # Agent 配置模型、聊天命令、Runner 接口
-│   │   │   ├── ports                   # 模型、工具、Agent、Runner、Registry、SessionStore 端口
-│   │   │   └── service
-│   │   │       ├── armory              # Agent 装配领域服务与节点链
-│   │   │       └── chat                # 会话解析与聊天运行时服务
-│   │   └── shared/tree                 # 泛型策略树路由框架
-│   ├── infrastructure
-│   │   ├── adk                         # Agent/Runner/插件适配
-│   │   ├── ai                          # OpenAI-compatible client、MCP SSE client、tool/skill 工厂
-│   │   ├── cache                       # Redis client adapter
-│   │   ├── logging                     # zap logger
-│   │   └── persistence                 # MySQL/GORM adapter
-│   └── trigger/http                    # Gin HTTP 入站路由
-├── pkg/types                           # 应用错误码与 AppError
-├── .env.example
-├── go.mod
-└── README.md
-```
-
-## 后端架构
+### 整体架构
 
 ```mermaid
-flowchart LR
-    Client["Client / frontend"] --> Gin["trigger/http<br/>Gin routes"]
-    Gin --> ChatService["domain/agent/service/chat"]
-    ChatService --> Registry["AgentRegistry<br/>in-memory by default"]
-    ChatService --> SessionStore["SessionStore<br/>in-memory by default"]
-    Registry --> Runner["model.Runner"]
-    Runner --> Agent["ADK adapter Agent"]
-    Agent --> Model["ports.ChatModel"]
-    Model --> OpenAI["OpenAI-compatible<br/>chat/completions"]
-    Agent --> ToolRouter["MCPToolRouter"]
-    ToolRouter --> MCP["MCP SSE tools"]
+flowchart TB
+    Browser["Browser"] --> Frontend["frontend<br/>Next.js + react-drawio"]
+    Frontend --> Handler["internal/trigger/http<br/>Gin handlers"]
+    Handler --> Chat["domain/agent/service/chat"]
+    Chat --> Registry["AgentRegistry<br/>in-memory"]
+    Chat --> Session["SessionStore<br/>in-memory"]
+    Registry --> Runner["Runner adapter"]
+    Runner --> Workflow["Sequential Agent Workflow"]
+    Workflow --> Model["OpenAI-compatible ChatModel"]
+    Workflow --> Tools["MCP Tool Router"]
+    Model --> LLM["Chat Completions Service"]
+    Tools --> MCP["MCP SSE Server"]
 
-    Config["configs/application.yaml<br/>configs/agent/*.yaml"] --> Bootstrap["internal/app/bootstrap"]
+    AppConfig["configs/application.yaml"] --> Bootstrap["internal/app/bootstrap"]
+    AgentConfig["configs/agent/*.yaml"] --> Bootstrap
     Bootstrap --> Armory["domain/agent/service/armory"]
     Armory --> Registry
 ```
 
 后端按端口与适配器组织：
 
-- `internal/domain` 定义核心模型、端口、Armory 装配和聊天服务。
-- `internal/app/bootstrap` 负责把配置、领域服务、基础设施 adapter 和 Gin 路由连起来。
-- `internal/infrastructure` 实现外部依赖适配，包括模型 client、MCP client、ADK Runner、Redis、MySQL 和日志。
-- `internal/trigger/http` 只处理 HTTP 入参、出参和路由注册。
-- `pkg/types` 提供跨层使用的错误码：`0000` 成功、`0001` 未知错误、`0002` 参数错误、`0003` Agent 不存在。
+- `internal/domain`：定义 Agent 配置模型、领域端口、Armory 装配和聊天服务。
+- `internal/app`：加载应用配置并连接领域服务与基础设施。
+- `internal/infrastructure`：实现模型、MCP、ADK、日志、MySQL 和 Redis adapter。
+- `internal/trigger/http`：处理 Gin 路由、HTTP 参数和响应。
+- `pkg/types`：提供应用错误码与统一错误类型。
 
-## 启动流程
+<details>
+<summary><strong>启动与装配流程</strong></summary>
 
 ```mermaid
 sequenceDiagram
@@ -145,220 +272,117 @@ sequenceDiagram
     participant Armory as domain/armory
     participant HTTP as Gin
 
-    Main->>Main: parse -env and -config flags
-    Main->>Main: load dotenv file if present
-    Main->>Config: LoadApplication(configs/application.yaml)
+    Main->>Main: 加载 .env 与启动参数
+    Main->>Config: 读取 application.yaml
     Main->>Bootstrap: Build(context, appCfg, logger)
-    Bootstrap->>Config: LoadAgentTablesFile(configured paths)
+    Bootstrap->>Config: 加载 configs/agent/*.yaml
     Bootstrap->>Armory: AcceptArmoryAgents(tables)
-    Armory->>Bootstrap: registered runnable Agents
-    Bootstrap->>HTTP: create router and register /healthz + /api/v1
+    Armory-->>Bootstrap: 返回已注册的 Runner
+    Bootstrap->>HTTP: 注册 /healthz 与 /api/v1 路由
     Main->>HTTP: engine.Run()
 ```
 
-入口文件是 `cmd/server/main.go`。默认行为：
+`cmd/server/main.go` 支持：
 
-- `-env` 默认读取 `.env`，也可通过 `APP_ENV_FILE` 指定；传空字符串可跳过 dotenv。
-- `-config` 默认读取 `configs/application.yaml`，也可通过 `APP_CONFIG` 指定。
-- dotenv 中的变量会进入进程环境，Agent YAML 里的 `${VAR}` 和 `${VAR:-default}` 会在加载时展开。
-- `configs/application.yaml` 负责声明服务地址、LLM 请求超时、Agent 配置文件路径，以及当前可选的 MySQL/Redis 设置。
-- `bootstrap.Build` 会装配 Agent、创建 `ChatService`、注册 Gin 路由并返回可运行的 `Engine`。
+- `-env`，默认 `.env`，也可以通过 `APP_ENV_FILE` 指定。
+- `-config`，默认 `configs/application.yaml`，也可以通过 `APP_CONFIG` 指定。
+- Agent YAML 中的环境变量占位符会在加载阶段展开。
 
-## Armory 装配流程
+</details>
 
-Armory 是 Agent 配置到运行时对象的装配链。每个 Agent table 都会使用新的 `DynamicContext`，按节点顺序构建和传递装配状态。
+<details>
+<summary><strong>Armory 装配链</strong></summary>
 
-```mermaid
-flowchart TD
-    Root["RootNode"] --> Api["AiAPINode<br/>build ModelAPI"]
-    Api --> ChatModel["ChatModelNode<br/>build MCP/skill tools<br/>build ChatModel"]
-    ChatModel --> Agent["AgentNode<br/>build LLM Agents"]
-    Agent --> Workflow["AgentWorkflowNode<br/>build loop/parallel/sequential Agents"]
-    Workflow --> Runner["RunnerNode<br/>build Runner and register Agent"]
-```
-
-关键文件：
-
-- `internal/domain/agent/service/armory/factory/factory.go`：组合完整节点链。
-- `internal/domain/agent/service/armory/context.go`：保存 ModelAPI、ChatModel、已构建 Agent、当前 workflow 进度和临时值。
-- `internal/domain/agent/service/armory/chat_model_node.go`：构建 MCP 工具、skill 工具和 ChatModel。
-- `internal/domain/agent/service/armory/workflow/*.go`：按 `loop`、`parallel`、`sequential` 构建 workflow Agent。
-- `internal/domain/agent/service/armory/runner_node.go`：根据 `runner.agent-name` 找到入口 Agent，创建 Runner 并注册到 `AgentRegistry`。
-
-Workflow 行为：
-
-- `sequential`：按配置顺序执行子 Agent，并用子 Agent 的 `output-key` 保存中间结果，后续 Agent 指令可用 `{output_key}` 引用。
-- `loop`：当前 adapter 中按 fan-out 方式执行配置的子 Agent；配置里保留 `max-iterations` 字段。
-- `parallel`：当前 adapter 中按 fan-out 方式聚合子 Agent 输出。
-
-## 运行时对话流程
+Armory 负责把声明式 Agent 配置转换为运行时对象：
 
 ```mermaid
-sequenceDiagram
-    participant Client
-    participant Handler as trigger/http
-    participant Chat as chat.Service
-    participant Registry as AgentRegistry
-    participant Runner
-    participant Agent
-    participant Model as OpenAI-compatible model
-    participant Tool as MCPToolRouter
-
-    Client->>Handler: POST /api/v1/chat
-    Handler->>Chat: HandleMessage(agentId,userId,sessionId,message)
-    Chat->>Registry: Get(agentId)
-    Chat->>Runner: Run(userId,sessionId,content)
-    Runner->>Agent: run(content)
-    Agent->>Model: chat/completions
-    alt model requests tool calls
-        Agent->>Tool: CallTool(name,args)
-        Tool-->>Agent: tool result
-        Agent->>Model: next chat/completions with tool result
-    end
-    Model-->>Agent: final content
-    Agent-->>Runner: output
-    Runner-->>Handler: []string
-    Handler-->>Client: {code,info,data}
+flowchart LR
+    Root["RootNode"] --> API["AiAPINode"]
+    API --> ChatModel["ChatModelNode<br/>MCP / Skill / Model"]
+    ChatModel --> Agent["AgentNode"]
+    Agent --> Workflow["AgentWorkflowNode"]
+    Workflow --> Runner["RunnerNode"]
+    Runner --> Registry["AgentRegistry"]
 ```
 
-同步聊天走 `Runner.Run`，流式聊天走 `Runner.Stream`。LLM Agent 最多允许 4 轮 tool-call 循环，避免工具调用无限递归。
+每个 Agent table 都使用独立的 `DynamicContext`，按节点顺序传递 Model API、ChatModel、Agent、Workflow 和 Runner 等装配结果。
 
-## 快速开始
+</details>
 
-### 环境要求
-
-- Go 1.25.6+
-- Node.js 18+ 和 npm，仅启动 `frontend/` 时需要
-- Docker，可选，仅在本地启动 MySQL/Redis 参考服务时需要
-- 一个 OpenAI-compatible Chat Completions 服务
-- 如果启用示例里的百度搜索 MCP，还需要可访问的 MCP SSE endpoint
-
-### 1. 安装依赖并编译
-
-```bash
-cd ai-agent-scaffold-go
-go mod tidy
-go build ./...
-```
-
-### 2. 准备环境变量
-
-复制示例文件：
-
-```bash
-cp .env.example .env
-```
-
-至少替换以下变量为自己的真实值：
-
-```dotenv
-OPENAI_BASE_URL=https://api.example.com/
-OPENAI_API_KEY=replace-with-your-key
-BAIDU_SEARCH_MCP_BASE_URI=http://example.com/mcp/
-BAIDU_SEARCH_MCP_SSE_ENDPOINT=sse?api_key=replace-with-your-key
-```
-
-`configs/agent/*.yaml` 会读取这些变量来构建模型和 MCP 工具。
-
-### 3. 可选：启动本地 MySQL/Redis
-
-当前默认后端启动路径使用内存态 Agent registry 和 session store；MySQL/Redis 适配器已经存在，但不是默认启动的硬依赖。需要本地服务时可以使用：
-
-```bash
-docker compose -f deployments/docker-compose.yml up -d
-```
-
-参考端口：
-
-- MySQL：`127.0.0.1:13306`
-- Redis：`127.0.0.1:16379`
-
-### 4. 启动后端
-
-```bash
-go run ./cmd/server
-```
-
-也可以显式指定文件：
-
-```bash
-go run ./cmd/server -env .env -config configs/application.yaml
-```
-
-默认监听地址来自 `configs/application.yaml`：
+### 项目结构
 
 ```text
-:8091
+drawio-agent-go
+├── cmd/server/main.go                  # 后端入口
+├── configs
+│   ├── application.yaml               # 服务、LLM 超时和 Agent 配置路径
+│   └── agent
+│       ├── agent-draw-io.yaml          # Draw.io 三 Agent 工作流
+│       ├── only-one-agent.yaml         # 单 Agent 示例
+│       └── skills/                     # SKILL.md 资源示例
+├── deployments                         # MySQL/Redis 参考环境
+├── frontend                            # Next.js + react-drawio 前端
+├── internal
+│   ├── api                             # HTTP DTO 与统一响应
+│   ├── app                             # 配置加载与应用 Bootstrap
+│   ├── domain                          # Agent 领域模型、端口和服务
+│   ├── infrastructure                  # 模型、MCP、ADK、DB、缓存和日志 adapter
+│   └── trigger/http                    # Gin 路由与 Handler
+├── pkg/types                           # 错误码与 AppError
+├── .env.example
+├── go.mod
+└── README.md
 ```
 
-健康检查：
-
-```bash
-curl http://localhost:8091/healthz
-```
-
-预期响应：
-
-```json
-{"status":"ok"}
-```
+> 仓库展示名称已经是 Drawio-Agent-Go；当前 Go module 和部分运行时配置仍保留 `ai-agent-scaffold-go`，因此代码导入路径不应直接按展示名称替换。
 
 ## 配置说明
 
 ### 应用配置
 
-`configs/application.yaml` 控制应用启动参数：
+`configs/application.yaml` 控制服务地址、LLM 超时和需要装配的 Agent 文件：
 
 ```yaml
 app:
   name: ai-agent-scaffold-go
   env: local
+
 server:
   addr: ":8091"
-database:
-  required: false
-  dsn: "root:<password>@tcp(127.0.0.1:13306)/ai-agent-scaffold-go?charset=utf8mb4&parseTime=True&loc=Local"
-redis:
-  required: false
-  addr: "127.0.0.1:16379"
-  password: ""
-  db: 0
+
 llm:
   request-timeout: 5m
+
 agent:
   config-paths:
     - configs/agent/only-one-agent.yaml
     - configs/agent/agent-draw-io.yaml
 ```
 
-说明：
+默认配置会同时注册单 Agent 示例和 Draw.io Agent。前端首次进入时不保证自动选中绘图 Agent，请手动选择 **AI交互式绘图智能体**。
 
-- `server.addr` 是 Gin 监听地址。
-- `llm.request-timeout` 使用 Go `time.ParseDuration` 格式，例如 `30s`、`5m`、`1h`。
-- `agent.config-paths` 可配置多个 Agent YAML，启动时会合并所有 tables。
-- `database` 和 `redis` 设置目前主要对应基础设施 adapter；默认 bootstrap 没有强制打开它们。
+MySQL 和 Redis adapter 已经存在，但默认 Bootstrap 使用内存态 `AgentRegistry` 和 `SessionStore`，启动本项目不强制依赖 MySQL 或 Redis。
 
-### Agent 配置
+### Draw.io Agent 配置
 
-Agent 配置文件结构位于 `configs/agent/*.yaml`：
+核心配置位于 `configs/agent/agent-draw-io.yaml`：
 
 ```yaml
 ai:
   agent:
     config:
       tables:
-        testAgent03:
-          app-name: testAgent03
+        drawIoAgent:
+          app-name: drawIoAgent
           agent:
-            agent-id: "100003"
-            agent-name: "single agent"
-            agent-desc: "single agent demo"
+            agent-id: "300000"
+            agent-name: "AI交互式绘图智能体"
+            agent-desc: "人 + AI + Draw.io，交互式对话完成 draw.io 绘图。"
           module:
             ai-api:
               base-url: ${OPENAI_BASE_URL}
               api-key: ${OPENAI_API_KEY}
-              completions-path: "v1/chat/completions"
-              embeddings-path: "v1/embeddings"
+              completions-path: v1/chat/completions
             chat-model:
               model: "gpt-5.5"
               tool-mcp-list:
@@ -366,45 +390,29 @@ ai:
                     name: baidu-search
                     base-uri: ${BAIDU_SEARCH_MCP_BASE_URI}
                     sse-endpoint: ${BAIDU_SEARCH_MCP_SSE_ENDPOINT}
-                    request-timeout: 500000
-              tool-skills-list:
-                - type: "resource"
-                  path: "agent/skills"
-            agents:
-              - name: "onlyAgent"
-                description: "study plan helper"
-                instruction: |
-                  Build a beginner-friendly study plan from the user's request.
-            runner:
-              agent-name: "onlyAgent"
-              plugin-name-list:
-                - "myTestPlugin"
-                - "myLogPlugin"
+              agents:
+                - name: agent_analyst
+                  output-key: analysis_result
+                - name: agent_drawer
+                  output-key: draft_diagram
+                - name: agent_reviewer
+                  output-key: final_result
+              agent-workflows:
+                - type: sequential
+                  name: sequential_draw_process
+                  sub-agents:
+                    - agent_analyst
+                    - agent_drawer
+                    - agent_reviewer
+              runner:
+                agent-name: sequential_draw_process
 ```
 
-启动时会校验：
-
-- `app-name`
-- `agent.agent-id`
-- `module.ai-api.base-url`
-- `module.ai-api.api-key`
-- `module.chat-model.model`
-- `module.agents[].name`
-- `module.agents[].instruction`
-- `module.runner.agent-name`
-- 每个 MCP tool 必须且只能声明 `local`、`sse`、`stdio` 之一
-- workflow type 必须是 `loop`、`parallel` 或 `sequential`
-
-默认值：
-
-- `ai-api.completions-path` 默认 `v1/chat/completions`
-- `ai-api.embeddings-path` 默认 `v1/embeddings`
-- `tool-skills-list[].type` 默认 `directory`
-- `agent-workflows[].max-iterations` 默认 `3`
+完整的 Agent 指令、Workflow 示例和插件配置请直接查看 `configs/agent/agent-draw-io.yaml`。
 
 ## HTTP API
 
-非流式接口统一返回：
+`/api/v1` 下的成功响应统一使用以下结构：
 
 ```json
 {
@@ -414,161 +422,123 @@ ai:
 }
 ```
 
-### GET /healthz
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/healthz` | 服务健康检查 |
+| `GET` | `/api/v1/query_ai_agent_config_list` | 查询已注册的 Agent |
+| `POST / GET` | `/api/v1/create_session` | 为 `userId + agentId` 创建或复用会话 |
+| `POST` | `/api/v1/chat` | 同步执行 Agent |
+| `POST` | `/api/v1/chat_stream` | 以 SSE 形式返回 Runner 输出 |
 
-健康检查。
-
-```bash
-curl http://localhost:8091/healthz
-```
-
-```json
-{"status":"ok"}
-```
-
-### GET /api/v1/query_ai_agent_config_list
-
-查询已经注册的 Agent。
+### 查询 Agent
 
 ```bash
 curl http://localhost:8091/api/v1/query_ai_agent_config_list
 ```
 
-响应示例：
+Draw.io Agent 的响应项类似：
 
 ```json
 {
-  "code": "0000",
-  "info": "success",
-  "data": [
-    {
-      "agentId": "100003",
-      "agentName": "single agent",
-      "agentDesc": "single agent demo"
-    }
-  ]
+  "agentId": "300000",
+  "agentName": "AI交互式绘图智能体",
+  "agentDesc": "人 + AI + Draw.io，交互式对话完成 draw.io 绘图。"
 }
 ```
 
-### POST /api/v1/create_session
-
-创建或复用某个 `userId + agentId` 的会话。
+### 创建会话
 
 ```bash
 curl -X POST http://localhost:8091/api/v1/create_session \
   -H 'Content-Type: application/json' \
-  -d '{"agentId":"100003","userId":"u1001"}'
+  -d '{"agentId":"300000","userId":"u1001"}'
 ```
-
-响应示例：
 
 ```json
 {
   "code": "0000",
   "info": "success",
   "data": {
-    "sessionId": "testAgent03:u1001:1"
+    "sessionId": "drawIoAgent:u1001:1"
   }
 }
 ```
 
-同等 GET 形式：
+### 生成 Draw.io 图表
 
-```bash
-curl 'http://localhost:8091/api/v1/create_session?agentId=100003&userId=u1001'
-```
-
-### POST /api/v1/chat
-
-同步聊天。`sessionId` 可为空；为空时服务会自动创建或复用会话。
+`sessionId` 可以为空，服务会自动创建或复用会话：
 
 ```bash
 curl -X POST http://localhost:8091/api/v1/chat \
   -H 'Content-Type: application/json' \
   -d '{
-    "agentId": "100003",
+    "agentId": "300000",
     "userId": "u1001",
     "sessionId": "",
-    "message": "帮我制定一个 Go Agent 学习计划"
+    "message": "绘制一个包含网关、用户服务、订单服务、Redis 和 MySQL 的微服务架构图"
   }'
 ```
 
-响应示例：
+响应中的 `content` 是可直接加载到 Draw.io 的 XML：
 
 ```json
 {
   "code": "0000",
   "info": "success",
   "data": {
-    "content": "..."
+    "content": "<mxfile>...</mxfile>"
   }
 }
 ```
 
-### POST /api/v1/chat_stream
-
-流式聊天，响应类型为 `text/event-stream`。
+### SSE 接口
 
 ```bash
 curl -N -X POST http://localhost:8091/api/v1/chat_stream \
   -H 'Content-Type: application/json' \
   -d '{
-    "agentId": "100003",
+    "agentId": "300000",
     "userId": "u1001",
     "sessionId": "",
-    "message": "继续细化第一周计划"
+    "message": "绘制一个用户登录时序图"
   }'
 ```
 
-流式片段示例：
+Draw.io Workflow 会先执行完整的分析、绘图和检查流程，再通过 SSE 返回 Runner 输出；当前实现不等同于逐 Token 实时绘图。
 
-```text
-event: message
-data: 第一周可以从...
+## 常见问题
 
-event: message
-data: 接下来...
-```
+### 为什么打开前端后没有自动选择 Draw.io Agent？
 
-如果执行出错，服务会发送：
+默认 `application.yaml` 同时加载了两份 Agent 配置，前端会选择列表中的第一个 Agent。请在右侧下拉框中手动选择“AI交互式绘图智能体”。
 
-```text
-event: error
-data: <error message>
-```
+### 为什么后端启动时报 MCP 配置错误？
 
-## 前端启动
+默认 Agent 配置声明了 SSE MCP 工具。请配置 `BAIDU_SEARCH_MCP_BASE_URI` 和 `BAIDU_SEARCH_MCP_SSE_ENDPOINT`，或者从启用的 Agent YAML 中移除 `tool-mcp-list`。
 
-`frontend/` 是一个 Next.js draw.io 示例前端，默认调用 `http://localhost:8091/api/v1`；启动方式是 `cd frontend && npm install && npm run dev`，然后访问 `http://localhost:3000`。
+### 如何让 AI 修改现有图表，而不是重新生成？
 
-如需改后端地址，设置：
+打开“携带画布上下文”。前端会把当前 Draw.io XML 和新指令一起发送给 Agent，生成结果后覆盖当前画布。
 
-```bash
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8091/api/v1
-```
+### MySQL 和 Redis 是必需的吗？
+
+不是。默认启动路径使用内存态 Registry 和 SessionStore；MySQL/GORM 与 Redis 目前主要作为脚手架中的可选基础设施 adapter。
+
+### 前端绘图记录保存在哪里？
+
+保存在浏览器 `localStorage`。清理浏览器站点数据后，本地绘图记录也会被删除。
 
 ## 开发与验证
 
-后端常用命令：
+后端：
 
 ```bash
 go test ./...
 go build ./...
-```
-
-检查 Go 文件是否需要格式化：
-
-```bash
 test -z "$(gofmt -l .)"
 ```
 
-格式化：
-
-```bash
-gofmt -w .
-```
-
-前端常用命令：
+前端：
 
 ```bash
 cd frontend
@@ -576,6 +546,10 @@ npm run lint
 npm run build
 ```
 
+## 参与贡献
+
+欢迎通过 Issue 提交问题或建议，也欢迎提交 Pull Request 改进 Agent 指令、绘图质量、前端交互或工程化能力。提交前请至少完成相关构建和测试命令。
+
 ## 联系作者
 
-- 邮箱：2465549609@qq.com
+- 邮箱：xu1feng218@163.com

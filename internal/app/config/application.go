@@ -5,16 +5,18 @@ import (
 	"os"
 	"time"
 
+	execution "ai-agent-scaffold-go/internal/domain/agent/runtime"
 	"gopkg.in/yaml.v3"
 )
 
 type Application struct {
-	App      AppSection      `yaml:"app"`
-	Server   ServerSection   `yaml:"server"`
-	Database DatabaseSection `yaml:"database"`
-	Redis    RedisSection    `yaml:"redis"`
-	Agent    AgentSection    `yaml:"agent"`
-	LLM      LLMSection      `yaml:"llm"`
+	Runtime  execution.Options `yaml:"runtime"`
+	App      AppSection        `yaml:"app"`
+	Server   ServerSection     `yaml:"server"`
+	Database DatabaseSection   `yaml:"database"`
+	Redis    RedisSection      `yaml:"redis"`
+	Agent    AgentSection      `yaml:"agent"`
+	LLM      LLMSection        `yaml:"llm"`
 }
 
 type AppSection struct {
@@ -46,7 +48,7 @@ type LLMSection struct {
 	RequestTimeout string `yaml:"request-timeout"`
 }
 
-const defaultLLMRequestTimeout = 5 * time.Minute
+const defaultLLMRequestTimeout = time.Minute
 
 func (s LLMSection) RequestTimeoutDuration() (time.Duration, error) {
 	raw := ""
@@ -71,7 +73,7 @@ func LoadApplication(path string) (Application, error) {
 	if err != nil {
 		return Application{}, fmt.Errorf("read application config %s: %w", path, err)
 	}
-	var app Application
+	app := Application{Runtime: execution.Defaults()}
 	if err := yaml.Unmarshal(data, &app); err != nil {
 		return Application{}, fmt.Errorf("parse application config: %w", err)
 	}
@@ -82,6 +84,9 @@ func LoadApplication(path string) (Application, error) {
 		app.App.Env = "local"
 	}
 	if _, err := app.LLM.RequestTimeoutDuration(); err != nil {
+		return Application{}, err
+	}
+	if err := app.Runtime.Validate(); err != nil {
 		return Application{}, err
 	}
 	return app, nil

@@ -1,22 +1,30 @@
 package chat
 
 import (
+	"context"
 	"fmt"
 	"sort"
+	"sync/atomic"
 
 	"ai-agent-scaffold-go/internal/domain/agent/model"
 	"ai-agent-scaffold-go/internal/domain/agent/ports"
+	execution "ai-agent-scaffold-go/internal/domain/agent/runtime"
 	"ai-agent-scaffold-go/pkg/types"
 )
 
 type Service struct {
 	registry ports.AgentRegistry
 	sessions ports.SessionStore
+	busy     atomic.Bool
+	options  execution.Options
 }
 
 func NewService(registry ports.AgentRegistry, sessions ports.SessionStore) *Service {
-	return &Service{registry: registry, sessions: sessions}
+	return &Service{registry: registry, sessions: sessions, options: execution.Defaults()}
 }
+
+func (s *Service) WithOptions(o execution.Options) *Service { s.options = o; return s }
+func (s *Service) MaxRequestBytes() int64                   { return s.options.MaxRequestBytes }
 
 func (s *Service) QueryAgentConfigList() []model.AgentSummary {
 	registered := s.registry.List()
@@ -52,9 +60,9 @@ func (s *Service) CreateSession(agentID, userID string) (string, error) {
 	return sessionID, nil
 }
 
-func (s *Service) HandleMessage(agentID, userID, sessionID, message string) ([]string, error) {
+func (s *Service) HandleMessage(ctx context.Context, agentID, userID, sessionID, message string) ([]string, error) {
 	content := model.ChatContent{Texts: []model.TextPart{{Message: message}}}
-	return s.HandleCommand(model.ChatCommand{
+	return s.HandleCommand(ctx, model.ChatCommand{
 		AgentID:   agentID,
 		UserID:    userID,
 		SessionID: sessionID,
@@ -63,16 +71,29 @@ func (s *Service) HandleMessage(agentID, userID, sessionID, message string) ([]s
 	})
 }
 
-func (s *Service) HandleCommand(command model.ChatCommand) ([]string, error) {
+func (s *Service) HandleCommand(ctx context.Context, command model.ChatCommand) ([]string, error) {
+	if !s.busy.CompareAndSwap(false, true) {
+		return nil, execution.ErrBusy
+	}
+	defer s.busy.Store(false)
+	ctx, cancel := execution.NewContext(ctx, s.options)
+	defer cancel()
+	if len(command.Content.Texts) == 0 && command.Message != "" {
+		command.Content.Texts = []model.TextPart{{Message: command.Message}}
+	}
 	registered, sessionID, err := s.resolveRunnerSession(command)
 	if err != nil {
 		return nil, err
 	}
-	return registered.Runner.Run(command.UserID, sessionID, command.Content)
+	result, err := registered.Runner.Run(ctx, command.UserID, sessionID, command.Content)
+	if err == nil {
+		err = ctx.Err()
+	}
+	return result, err
 }
 
-func (s *Service) HandleMessageStream(agentID, userID, sessionID, message string) (<-chan string, <-chan error) {
-	return s.HandleCommandStream(model.ChatCommand{
+func (s *Service) HandleMessageStream(ctx context.Context, agentID, userID, sessionID, message string) (<-chan string, <-chan error) {
+	return s.HandleCommandStream(ctx, model.ChatCommand{
 		AgentID:   agentID,
 		UserID:    userID,
 		SessionID: sessionID,
@@ -81,17 +102,49 @@ func (s *Service) HandleMessageStream(agentID, userID, sessionID, message string
 	})
 }
 
-func (s *Service) HandleCommandStream(command model.ChatCommand) (<-chan string, <-chan error) {
-	registered, sessionID, err := s.resolveRunnerSession(command)
-	if err != nil {
-		outputs := make(chan string)
-		errs := make(chan error, 1)
-		errs <- err
+func (s *Service) HandleCommandStream(ctx context.Context, command model.ChatCommand) (<-chan string, <-chan error) {
+	outputs := make(chan string, 1)
+	errs := make(chan error, 1)
+	// Acquire synchronously, before creating any execution goroutine.
+	if !s.busy.CompareAndSwap(false, true) {
+		errs <- execution.ErrBusy
 		close(outputs)
 		close(errs)
 		return outputs, errs
 	}
-	return registered.Runner.Stream(command.UserID, sessionID, command.Content)
+	ctx, cancel := execution.NewContext(ctx, s.options)
+	go func() {
+		defer close(outputs)
+		defer close(errs)
+		defer s.busy.Store(false)
+		defer cancel()
+		if len(command.Content.Texts) == 0 && command.Message != "" {
+			command.Content.Texts = []model.TextPart{{Message: command.Message}}
+		}
+		registered, sessionID, err := s.resolveRunnerSession(command)
+		if err != nil {
+			errs <- err
+			return
+		}
+		// Only complete final output is published; candidate XML never reaches the client.
+		result, err := registered.Runner.Run(ctx, command.UserID, sessionID, command.Content)
+		if err == nil {
+			err = ctx.Err()
+		}
+		if err != nil {
+			errs <- err
+			return
+		}
+		for _, text := range result {
+			select {
+			case outputs <- text:
+			case <-ctx.Done():
+				errs <- ctx.Err()
+				return
+			}
+		}
+	}()
+	return outputs, errs
 }
 
 func (s *Service) resolveRunnerSession(command model.ChatCommand) (model.RegisteredAgent, string, error) {

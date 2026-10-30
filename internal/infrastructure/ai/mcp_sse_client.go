@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"ai-agent-scaffold-go/internal/domain/agent/ports"
+	execution "ai-agent-scaffold-go/internal/domain/agent/runtime"
 )
 
 const (
@@ -24,10 +24,11 @@ const (
 )
 
 type MCPSSEClient struct {
-	baseURI    string
-	endpoint   string
-	httpClient *http.Client
-	timeout    time.Duration
+	baseURI        string
+	endpoint       string
+	httpClient     *http.Client
+	timeout        time.Duration
+	maxResultBytes int64
 
 	mu          sync.Mutex
 	started     bool
@@ -45,10 +46,11 @@ func NewMCPSSEClient(baseURI, endpoint string, requestTimeoutMillis int) *MCPSSE
 		timeout = 120 * time.Second
 	}
 	return &MCPSSEClient{
-		baseURI:    strings.TrimRight(baseURI, "/"),
-		endpoint:   endpoint,
-		httpClient: &http.Client{Timeout: 0},
-		timeout:    timeout,
+		baseURI:        strings.TrimRight(baseURI, "/"),
+		endpoint:       endpoint,
+		httpClient:     &http.Client{Timeout: 0},
+		timeout:        timeout,
+		maxResultBytes: execution.Defaults().MaxToolBytes,
 	}
 }
 
@@ -61,7 +63,7 @@ func (c *MCPSSEClient) ensureStarted(ctx context.Context) error {
 	c.pending = make(map[uint64]chan json.RawMessage)
 	c.endpointSig = make(chan struct{})
 	c.streamErr = make(chan error, 1)
-	streamCtx, cancel := context.WithCancel(context.Background())
+	streamCtx, cancel := context.WithCancel(ctx)
 	c.cancelFn = cancel
 	c.started = true
 	c.mu.Unlock()
@@ -102,7 +104,7 @@ func (c *MCPSSEClient) openSSE(ctx context.Context) error {
 		return fmt.Errorf("mcp sse open: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(resp.Body)
+		raw, _ := execution.ReadBounded(resp.Body, c.maxResultBytes*6+65536)
 		_ = resp.Body.Close()
 		return fmt.Errorf("mcp sse status %d: %s", resp.StatusCode, truncate(string(raw), 200))
 	}
@@ -112,7 +114,8 @@ func (c *MCPSSEClient) openSSE(ctx context.Context) error {
 
 func (c *MCPSSEClient) readLoop(resp *http.Response) {
 	defer resp.Body.Close()
-	reader := bufio.NewReader(resp.Body)
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 4096), int(c.maxResultBytes*6+65536))
 	var event string
 	var dataBuf strings.Builder
 	dispatch := func() {
@@ -131,16 +134,8 @@ func (c *MCPSSEClient) readLoop(resp *http.Response) {
 			c.handleMessage(data)
 		}
 	}
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err != io.EOF {
-				c.signalStreamErr(fmt.Errorf("mcp sse read: %w", err))
-			} else {
-				c.signalStreamErr(fmt.Errorf("mcp sse stream closed"))
-			}
-			return
-		}
+	for scanner.Scan() {
+		line := scanner.Text()
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
 			dispatch()
@@ -154,8 +149,13 @@ func (c *MCPSSEClient) readLoop(resp *http.Response) {
 				dataBuf.WriteByte('\n')
 			}
 			dataBuf.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			if int64(dataBuf.Len()) > c.maxResultBytes*6+65536 {
+				c.signalStreamErr(execution.ErrSize)
+				return
+			}
 		}
 	}
+	c.signalStreamErr(fmt.Errorf("mcp stream closed: %v", scanner.Err()))
 }
 
 func (c *MCPSSEClient) handleEndpoint(data, eventName string) {
@@ -167,7 +167,7 @@ func (c *MCPSSEClient) handleEndpoint(data, eventName string) {
 	}
 	target := c.resolvePostURL(data)
 	c.mu.Lock()
-	if c.postURL == "" {
+	if c.started && c.postURL == "" {
 		c.postURL = target
 		close(c.endpointSig)
 	}
@@ -297,7 +297,18 @@ func (c *MCPSSEClient) CallTool(ctx context.Context, name, arguments string) (st
 	if err != nil {
 		return "", fmt.Errorf("mcp tools/call %q: %w", name, err)
 	}
-	return extractToolText(result), nil
+	var parsed toolCallResult
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		return "", fmt.Errorf("invalid tool result: %w", err)
+	}
+	if parsed.IsError {
+		return "", fmt.Errorf("mcp tool %q reported failure", name)
+	}
+	text := extractToolText(result)
+	if int64(len(text)) > c.maxResultBytes {
+		return "", execution.ErrSize
+	}
+	return text, nil
 }
 
 func (c *MCPSSEClient) ListTools(ctx context.Context) ([]string, error) {
@@ -353,8 +364,13 @@ func (c *MCPSSEClient) callRPC(ctx context.Context, method string, params any) (
 	ch := make(chan json.RawMessage, 1)
 	c.mu.Lock()
 	postURL := c.postURL
+	if c.pending == nil {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("mcp connection is closed")
+	}
 	c.pending[id] = ch
 	c.mu.Unlock()
+	defer func() { c.mu.Lock(); delete(c.pending, id); c.mu.Unlock() }()
 	if postURL == "" {
 		return nil, fmt.Errorf("mcp post url is not set")
 	}
@@ -376,8 +392,11 @@ func (c *MCPSSEClient) callRPC(ctx context.Context, method string, params any) (
 	if err != nil {
 		return nil, fmt.Errorf("mcp post: %w", err)
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, readErr := execution.ReadBounded(resp.Body, c.maxResultBytes*6+65536)
 	resp.Body.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("mcp post status %d", resp.StatusCode)
 	}
@@ -425,8 +444,14 @@ func (c *MCPSSEClient) notify(ctx context.Context, method string, params any) er
 	if err != nil {
 		return err
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, readErr := execution.ReadBounded(resp.Body, c.maxResultBytes*6+65536)
 	resp.Body.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("mcp notification status %d", resp.StatusCode)
+	}
 	return nil
 }
 
@@ -470,6 +495,7 @@ func (r *MCPToolRouter) RegisterAndExpand(tool ports.Tool) []ports.Tool {
 	ctx, cancel := context.WithTimeout(context.Background(), r.listTimeout)
 	defer cancel()
 	names, err := client.ListTools(ctx)
+	client.shutdown()
 	if err != nil {
 		r.listFailures[mcp.ToolName] = err
 		r.tools = append(r.tools, mcp)
@@ -492,7 +518,11 @@ func (r *MCPToolRouter) Tools() []ports.Tool {
 
 func (r *MCPToolRouter) CallTool(ctx context.Context, name, arguments string) (string, error) {
 	if client, ok := r.clients[name]; ok {
-		return client.CallTool(ctx, name, arguments)
+		// A request owns its transport; cancellation closes its SSE reader as well.
+		scoped := NewMCPSSEClient(client.baseURI, client.endpoint, int(client.timeout/time.Millisecond))
+		scoped.maxResultBytes = execution.OptionsFrom(ctx).MaxToolBytes
+		defer scoped.shutdown()
+		return scoped.CallTool(ctx, name, arguments)
 	}
 	for _, tool := range r.tools {
 		if tool.Name() != name {

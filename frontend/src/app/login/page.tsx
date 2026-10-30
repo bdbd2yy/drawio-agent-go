@@ -15,8 +15,6 @@ export default function Login() {
   useEffect(() => {
     const userInfo = getUserInfo();
     if (userInfo && userInfo.user) {
-      setIsLoggedIn(true);
-      setCurrentUser(userInfo.user);
       // If already logged in, redirect to home
       router.push('/');
     }

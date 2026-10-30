@@ -1,12 +1,15 @@
 package http
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 
 	"ai-agent-scaffold-go/internal/api/dto"
 	"ai-agent-scaffold-go/internal/api/response"
+	execution "ai-agent-scaffold-go/internal/domain/agent/runtime"
 	"ai-agent-scaffold-go/internal/domain/agent/service/chat"
 	"ai-agent-scaffold-go/pkg/types"
 	"github.com/gin-gonic/gin"
@@ -40,7 +43,7 @@ func createSession(service *chat.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request dto.CreateSessionRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
-			writeError(c, types.NewAppError(types.CodeIllegalParameter, err.Error()))
+			writeError(c, types.NewAppError(types.CodeIllegalParameter, "invalid request JSON"))
 			return
 		}
 		sessionID, err := service.CreateSession(request.AgentID, request.UserID)
@@ -66,11 +69,11 @@ func createSessionQuery(service *chat.Service) gin.HandlerFunc {
 func chatMessage(service *chat.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request dto.ChatRequest
-		if err := c.ShouldBindJSON(&request); err != nil {
-			writeError(c, types.NewAppError(types.CodeIllegalParameter, err.Error()))
+		if err := bindChatRequest(c, service, &request); err != nil {
+			writeError(c, err)
 			return
 		}
-		outputs, err := service.HandleMessage(request.AgentID, request.UserID, request.SessionID, request.Message)
+		outputs, err := service.HandleMessage(c.Request.Context(), request.AgentID, request.UserID, request.SessionID, request.Message)
 		if err != nil {
 			writeError(c, err)
 			return
@@ -82,28 +85,87 @@ func chatMessage(service *chat.Service) gin.HandlerFunc {
 func chatStream(service *chat.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request dto.ChatRequest
-		if err := c.ShouldBindJSON(&request); err != nil {
-			writeError(c, types.NewAppError(types.CodeIllegalParameter, err.Error()))
+		if err := bindChatRequest(c, service, &request); err != nil {
+			writeError(c, err)
 			return
 		}
-		outputs, errs := service.HandleMessageStream(request.AgentID, request.UserID, request.SessionID, request.Message)
+		outputs, errs := service.HandleMessageStream(c.Request.Context(), request.AgentID, request.UserID, request.SessionID, request.Message)
 		c.Header("Content-Type", "text/event-stream")
-		for output := range outputs {
-			c.SSEvent("message", output)
-			c.Writer.Flush()
+		c.Header("Cache-Control", "no-cache")
+		c.SSEvent("status", "running")
+		c.Writer.Flush()
+		for outputs != nil || errs != nil {
+			select {
+			case <-c.Request.Context().Done():
+				return
+			case output, ok := <-outputs:
+				if !ok {
+					outputs = nil
+					continue
+				}
+				c.SSEvent("message", output)
+				c.Writer.Flush()
+			case err, ok := <-errs:
+				if !ok {
+					errs = nil
+					continue
+				}
+				if err != nil {
+					c.SSEvent("error", err.Error())
+					c.Writer.Flush()
+					return
+				}
+			}
 		}
-		if err, ok := <-errs; ok && err != nil {
-			c.SSEvent("error", err.Error())
-			c.Writer.Flush()
-		}
+		c.SSEvent("done", "completed")
+		c.Writer.Flush()
 	}
 }
 
+func bindChatRequest(c *gin.Context, service *chat.Service, request *dto.ChatRequest) error {
+	raw, err := execution.ReadBounded(c.Request.Body, service.MaxRequestBytes())
+	if err != nil {
+		return err
+	}
+	if err = json.Unmarshal(raw, request); err != nil {
+		return types.NewAppError(types.CodeIllegalParameter, "invalid request JSON")
+	}
+	if strings.TrimSpace(request.AgentID) == "" || strings.TrimSpace(request.UserID) == "" || strings.TrimSpace(request.Message) == "" {
+		return types.NewAppError(types.CodeIllegalParameter, "agentId, userId and message are required")
+	}
+	return nil
+}
+
 func writeError(c *gin.Context, err error) {
-	var appErr *types.AppError
-	if errors.As(err, &appErr) {
-		c.JSON(http.StatusOK, response.Failure(appErr.Code, appErr.Info))
+	status := 0
+	switch {
+	case errors.Is(err, execution.ErrBusy):
+		status = http.StatusTooManyRequests
+	case errors.Is(err, context.DeadlineExceeded):
+		status = http.StatusGatewayTimeout
+	case errors.Is(err, context.Canceled):
+		status = http.StatusRequestTimeout
+	case errors.Is(err, execution.ErrSize):
+		status = http.StatusRequestEntityTooLarge
+	case errors.Is(err, execution.ErrBudget):
+		status = http.StatusUnprocessableEntity
+	}
+	var maxBytes *http.MaxBytesError
+	if errors.As(err, &maxBytes) {
+		status = http.StatusRequestEntityTooLarge
+	}
+	if status != 0 {
+		c.JSON(status, response.Failure(types.CodeUnknownError, err.Error()))
 		return
 	}
-	c.JSON(http.StatusOK, response.Failure(types.CodeUnknownError, err.Error()))
+	var appErr *types.AppError
+	if errors.As(err, &appErr) {
+		status := http.StatusBadRequest
+		if appErr.Code == types.CodeAgentNotFound {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, response.Failure(appErr.Code, appErr.Info))
+		return
+	}
+	c.JSON(http.StatusInternalServerError, response.Failure(types.CodeUnknownError, err.Error()))
 }

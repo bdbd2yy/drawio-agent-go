@@ -12,10 +12,18 @@ redis:
   password: ""
   db: 0
 llm:
-  # OpenAI 兼容上游每次请求的整体超时；画图等多步 Agent 流程建议放宽
-  # 支持 Go time.ParseDuration 格式：30s / 2m / 5m / 1h，留空走默认 5m
-  request-timeout: 5m
+  # HTTP 客户端超时；实际调用还受 runtime.model-timeout 和总请求期限约束
+  request-timeout: 60s
 agent:
   config-paths:
     - configs/agent/only-one-agent.yaml
     - configs/agent/agent-draw-io.yaml
+# Runtime limits apply to an entire drawing execution, including repairs.
+runtime:
+  request-timeout: 180s
+  model-timeout: 60s
+  tool-timeout: 20s
+  max-model-calls: 8
+  max-request-bytes: 2097152
+  max-model-bytes: 1048576
+  max-tool-bytes: 262144

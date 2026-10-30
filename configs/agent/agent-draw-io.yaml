@@ -89,11 +89,12 @@ ai:
               # 对外；定义一个串行工作流，按顺序执行分析、绘图、检查
               - type: sequential
                 name: sequential_draw_process
-                description: 标准绘图流程：分析 -> 绘图 -> 检查
+                description: 标准绘图流程：分析 -> 绘图 -> 程序校验与有限修复
+                validate-drawing: true
+                repair-agent: agent_drawer
                 sub-agents:
                   - agent_analyst
                   - agent_drawer
-                  - agent_reviewer
 
             runner:
               # 指定入口为串行工作流，这是最稳健的配置

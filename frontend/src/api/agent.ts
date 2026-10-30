@@ -38,13 +38,14 @@ export const agentApi = {
      * Create Session
      * Path: /api/v1/create_session
      */
-    createSession: async (agentId: string, userId: string): Promise<Response<CreateSessionResponseDTO>> => {
+    createSession: async (agentId: string, userId: string, signal?: AbortSignal): Promise<Response<CreateSessionResponseDTO>> => {
         const response = await fetch(`${API_CONFIG.BASE_URL}/create_session`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ agentId, userId }),
+            signal,
         });
         return handleResponse<CreateSessionResponseDTO>(response);
     },
@@ -53,13 +54,14 @@ export const agentApi = {
      * Chat
      * Path: /api/v1/chat
      */
-    chat: async (data: ChatRequestDTO): Promise<Response<ChatResponseDTO>> => {
+    chat: async (data: ChatRequestDTO, signal?: AbortSignal): Promise<Response<ChatResponseDTO>> => {
         const response = await fetch(`${API_CONFIG.BASE_URL}/chat`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify(data),
+            signal,
         });
         return handleResponse<ChatResponseDTO>(response);
     }

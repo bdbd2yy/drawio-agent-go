@@ -1,5 +1,7 @@
 package model
 
+import "context"
+
 type ArmoryCommand struct {
 	Table AiAgentConfigTable
 }
@@ -42,6 +44,6 @@ type RegisteredAgent struct {
 
 type Runner interface {
 	CreateSession(userID string) (string, error)
-	Run(userID, sessionID string, content ChatContent) ([]string, error)
-	Stream(userID, sessionID string, content ChatContent) (<-chan string, <-chan error)
+	Run(ctx context.Context, userID, sessionID string, content ChatContent) ([]string, error)
+	Stream(ctx context.Context, userID, sessionID string, content ChatContent) (<-chan string, <-chan error)
 }

@@ -33,6 +33,9 @@ type Engine struct {
 }
 
 func Build(ctx context.Context, appCfg config.Application, logger *zap.Logger) (*Engine, error) {
+	if err := appCfg.Runtime.Validate(); err != nil {
+		return nil, err
+	}
 	tables, err := loadAgentTables(appCfg.Agent.ConfigPaths)
 	if err != nil {
 		return nil, err
@@ -64,7 +67,7 @@ func Build(ctx context.Context, appCfg config.Application, logger *zap.Logger) (
 		return nil, fmt.Errorf("armory assembly: %w", err)
 	}
 
-	chatService := chat.NewService(registry, sessions)
+	chatService := chat.NewService(registry, sessions).WithOptions(appCfg.Runtime)
 
 	router := newRouter(appCfg.App.Env)
 	httptrigger.RegisterAgentRoutes(router, chatService)

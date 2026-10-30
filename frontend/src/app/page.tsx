@@ -161,6 +161,56 @@ export default function Home() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const currentSessionRef = useRef(currentSessionId);
 
+  const requestRef = useRef<AbortController | null>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const canvasLoadingRef = useRef(false);
+  const canceledExportRef = useRef(false);
+
+  const cancelExecution = () => {
+    const active = requestRef.current;
+    if (active || isExportingForChatRef.current) {
+      active?.abort();
+      requestRef.current = null;
+      canvasLoadingRef.current = false;
+      canceledExportRef.current = isExportingForChatRef.current;
+      isExportingForChatRef.current = false;
+      pendingMessageRef.current = '';
+      const canceled: Message = { id: crypto.randomUUID(), role: 'agent', content: '已取消', timestamp: Date.now() };
+      const origin = currentSessionRef.current;
+      setMessages(prev => [...prev, canceled]);
+      setSessions(prev => prev.map(s => s.id === origin ? { ...s, messages: [...messages, canceled], lastModified: Date.now() } : s));
+      setIsSending(false);
+    }
+  };
+
+  // A load action only posts a message. Wait for the actual editor acknowledgement.
+  const loadDiagram = (xml: string, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+    const frame = canvasContainerRef.current?.querySelector('iframe');
+    if (!frame?.contentWindow || !drawioRef.current) { reject(new Error('画布尚未准备好')); return; }
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('message', onMessage);
+      signal.removeEventListener('abort', onAbort);
+    };
+    const fail = (error: Error) => { cleanup(); reject(error); };
+    const onAbort = () => fail(new DOMException('已取消', 'AbortError'));
+    const onMessage = (event: MessageEvent) => {
+      if (event.source !== frame.contentWindow || event.origin !== new URL(frame.src).origin) return;
+      try {
+        const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        if (data?.event === 'load') { cleanup(); resolve(); }
+        else if (data?.event === 'error') fail(new Error('画布加载失败'));
+      } catch { /* Ignore unrelated iframe messages. */ }
+    };
+    const timer = window.setTimeout(() => fail(new Error('画布加载超时')), 15000);
+    window.addEventListener('message', onMessage);
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) { onAbort(); return; }
+    try { drawioRef.current.load({ xml }); } catch (error) { fail(error instanceof Error ? error : new Error('画布加载失败')); }
+  });
+
+  useEffect(() => () => requestRef.current?.abort(), []);
+
   // Update ref
   useEffect(() => {
     currentSessionRef.current = currentSessionId;
@@ -234,6 +284,7 @@ export default function Home() {
   }, [messages, currentSessionId, sessionId]);
 
   const createNewSession = (isInitial = false, backendId = '') => {
+    if (!isInitial) cancelExecution();
     const newSession: Session = {
       id: Date.now().toString(),
       backendSessionId: backendId,
@@ -249,6 +300,7 @@ export default function Home() {
     };
 
     setSessions(prev => [newSession, ...prev]);
+    currentSessionRef.current = newSession.id;
     setCurrentSessionId(newSession.id);
     setMessages(newSession.messages);
     setSessionId(backendId);
@@ -260,12 +312,14 @@ export default function Home() {
 
   const handleSwitchSession = (targetSessionId: string) => {
     if (targetSessionId === currentSessionId) return;
+    cancelExecution();
     loadSession(targetSessionId);
   };
 
   const loadSession = (targetSessionId: string) => {
     const session = sessions.find(s => s.id === targetSessionId);
     if (session) {
+        currentSessionRef.current = targetSessionId;
         setCurrentSessionId(targetSessionId);
         setMessages(session.messages);
         setSessionId(session.backendSessionId || '');
@@ -279,6 +333,7 @@ export default function Home() {
 
   const handleDeleteSession = (e: React.MouseEvent, sessionIdToDelete: string) => {
     e.stopPropagation();
+    if (sessionIdToDelete === currentSessionRef.current) cancelExecution();
     const newSessions = sessions.filter(s => s.id !== sessionIdToDelete);
     setSessions(newSessions);
     localStorage.setItem('drawio_sessions', JSON.stringify(newSessions));
@@ -367,6 +422,7 @@ export default function Home() {
   };
 
   const handleAgentChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    cancelExecution();
     const newAgentId = e.target.value;
     setSelectedAgentId(newAgentId);
     setSessionId(''); // Reset session when agent changes
@@ -386,10 +442,12 @@ export default function Home() {
   };
 
   const handleNewChat = async () => {
+     cancelExecution();
      finalizeNewChat();
   };
 
   const handleRestartSession = async () => {
+    cancelExecution();
     if (!selectedAgentId || !currentUser) return;
 
     if (!currentSessionId) {
@@ -428,7 +486,7 @@ export default function Home() {
     }
   };
 
-  const performSendMessage = async (displayContent: string, apiContent: string) => {
+  const performSendMessage = async (apiContent: string) => {
     if (!selectedAgentId) {
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
@@ -440,93 +498,59 @@ export default function Home() {
       return;
     }
 
-    const userMsg: Message = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: displayContent,
-      timestamp: Date.now()
-    };
-    setMessages(prev => [...prev, userMsg]);
-
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const originSessionId = currentSessionRef.current;
+    const previousXml = sessions.find(s => s.id === originSessionId)?.drawIoXml || '';
+    const isCurrent = () => requestRef.current === controller && !controller.signal.aborted && currentSessionRef.current === originSessionId;
+    let applyingDiagram = false;
     try {
-      // 1. Ensure Session
       let activeBackendSessionId = sessionId;
       if (!activeBackendSessionId) {
-        const sessionRes = await agentApi.createSession(selectedAgentId, currentUser);
+        const sessionRes = await agentApi.createSession(selectedAgentId, currentUser, controller.signal);
+        if (!isCurrent()) return;
         activeBackendSessionId = sessionRes.data.sessionId;
         setSessionId(activeBackendSessionId);
       }
-
-      // Update session lastModified
-      setSessions(prev => prev.map(session => {
-        if (session.id === currentSessionId) {
-          return { ...session, lastModified: Date.now() };
-        }
-        return session;
-      }));
-
-      // 2. Send Message
       const chatRes = await agentApi.chat({
-        agentId: selectedAgentId,
-        userId: currentUser,
-        sessionId: activeBackendSessionId,
-        message: apiContent
-      });
-
+        agentId: selectedAgentId, userId: currentUser,
+        sessionId: activeBackendSessionId, message: apiContent
+      }, controller.signal);
+      if (!isCurrent()) return;
       const { content } = chatRes.data;
-
-      // Go backend returns { content }; infer whether the content is draw.io XML.
-      if (!isDrawIoXmlContent(content)) {
-        const agentMsg: Message = {
-          id: (Date.now() + 1).toString(),
-          role: 'agent',
-          content: content,
-          timestamp: Date.now()
-        };
-        setMessages(prev => [...prev, agentMsg]);
+      if (isDrawIoXmlContent(content)) {
+        if (!isDrawIoReady) throw new Error('画布尚未准备好');
+        applyingDiagram = true;
+        canvasLoadingRef.current = true;
+        await loadDiagram(content, controller.signal);
+        if (!isCurrent()) return;
+        setSessions(prev => prev.map(s => s.id === originSessionId ? { ...s, drawIoXml: content, lastModified: Date.now() } : s));
+        setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'agent', content: '绘图完成', timestamp: Date.now() }]);
       } else {
-        // Save to session immediately (always update the session that initiated the request)
-        setSessions(prev => prev.map(session => {
-          if (session.id === currentSessionId) {
-            return { 
-              ...session, 
-              drawIoXml: content,
-              lastModified: Date.now() 
-            };
-          }
-          return session;
-        }));
-
-        // Render only if still on the same session
-        if (drawioRef.current && currentSessionId === currentSessionRef.current) {
-          try {
-            drawioRef.current.load({
-              xml: content
-            });
-          } catch (e) {
-            console.error('Failed to load diagram:', e);
-          }
-        }
+        setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'agent', content, timestamp: Date.now() }]);
       }
-
     } catch (error) {
-      console.error('Chat error:', error);
-      const errorMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'agent',
-        content: error instanceof Error ? `Error: ${error.message}` : '发送失败，请重试。',
-        timestamp: Date.now()
-      };
-      setMessages(prev => [...prev, errorMsg]);
+      if (applyingDiagram && currentSessionRef.current === originSessionId) {
+        drawioRef.current?.load({ xml: previousXml });
+      }
+      if (isCurrent()) {
+        setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'agent',
+          content: error instanceof Error ? `Error: ${error.message}` : '发送失败，请重试。', timestamp: Date.now() }]);
+      }
     } finally {
-      setIsSending(false);
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+        setIsSending(false);
+      }
+      if (!requestRef.current || requestRef.current === controller) canvasLoadingRef.current = false;
     }
   };
 
   const handleSendMessage = async () => {
-    if (!inputValue.trim() || isSending) return;
+    if (!inputValue.trim() || isSending || requestRef.current || isExportingForChatRef.current) return;
     
     const content = inputValue;
+    setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'user', content, timestamp: Date.now() }]);
     setInputValue('');
     setIsSending(true);
 
@@ -535,26 +559,28 @@ export default function Home() {
         pendingMessageRef.current = content;
         try {
             drawioRef.current.exportDiagram({
-                 format: 'xml' as any
+                 format: 'xmlsvg'
              });
         } catch (e) {
             console.error("Export failed", e);
-            performSendMessage(content, content);
+            isExportingForChatRef.current = false;
+            performSendMessage(content);
         }
     } else {
-        performSendMessage(content, content);
+        performSendMessage(content);
     }
   };
 
   useEffect(() => {
     if (!lastExportedData) return;
+    if (canceledExportRef.current) { canceledExportRef.current = false; return; }
     
     if (isExportingForChatRef.current) {
         isExportingForChatRef.current = false;
         const xml = lastExportedData.data;
         const content = pendingMessageRef.current;
         const apiContent = `[Context: Current Draw.io XML]\n\`\`\`xml\n${xml}\n\`\`\`\n\n${content}`;
-        performSendMessage(content, apiContent);
+        performSendMessage(apiContent);
         return;
     }
     
@@ -702,17 +728,17 @@ export default function Home() {
 
         {/* Draw.io Canvas Area */}
         <div className="flex-1 relative bg-slate-50 h-full flex flex-col">
-          <div className="flex-1 m-3 rounded-2xl overflow-hidden border border-slate-200 shadow-sm bg-white ring-1 ring-slate-100">
+          <div ref={canvasContainerRef} className="flex-1 m-3 rounded-2xl overflow-hidden border border-slate-200 shadow-sm bg-white ring-1 ring-slate-100">
             <DrawIoEmbed 
               ref={drawioRef}
               autosave={true}
               onAutoSave={(data) => {
-                if (currentSessionId && isDrawIoReady && !isExportingForChatRef.current) {
+                if (currentSessionRef.current && !canvasLoadingRef.current && !isExportingForChatRef.current) {
                    // Prefer using the XML directly from the autosave event if available
                    if (data && typeof data === 'object' && 'xml' in data) {
-                       const xmlContent = (data as any).xml;
+                       const xmlContent = data.xml;
                        setSessions(prev => prev.map(s => {
-                           if (s.id === currentSessionId) {
+                           if (s.id === currentSessionRef.current) {
                                return { ...s, drawIoXml: xmlContent };
                            }
                            return s;
@@ -720,12 +746,12 @@ export default function Home() {
                    } else {
                        // Fallback to export if no XML provided in event
                         isAutosaveRef.current = true;
-                        drawioRef.current?.exportDiagram({ format: 'xml' as any });
+                        drawioRef.current?.exportDiagram({ format: 'xmlsvg' });
                     }
                 }
               }}
               onLoad={() => setIsDrawIoReady(true)}
-              onExport={(data) => setLastExportedData({ data: data.data, timestamp: Date.now() })}
+              onExport={(data) => setLastExportedData({ data: isExportingForChatRef.current || isAutosaveRef.current ? data.xml : data.data, timestamp: Date.now() })}
               urlParameters={{
                 ui: 'atlas', // More modern UI theme for draw.io
                 spin: true,
@@ -856,6 +882,7 @@ export default function Home() {
                     Press <kbd className="font-sans px-1 py-0.5 bg-slate-100 border border-slate-200 rounded text-slate-500">Ctrl/Command</kbd> + <kbd className="font-sans px-1 py-0.5 bg-slate-100 border border-slate-200 rounded text-slate-500">Enter</kbd>
                 </span>
             </div>
+            {isSending && <button onClick={cancelExecution} className="mb-2 rounded-lg border border-slate-300 px-3 py-1 text-sm text-slate-600">停止生成</button>}
             <div className="relative flex items-end gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200 focus-within:border-indigo-300 focus-within:ring-4 focus-within:ring-indigo-50/50 focus-within:bg-white transition-all shadow-inner">
               <textarea
                 value={inputValue}

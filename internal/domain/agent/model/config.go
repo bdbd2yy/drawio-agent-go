@@ -83,11 +83,13 @@ type AgentConfig struct {
 }
 
 type AgentWorkflowConfig struct {
-	Type          WorkflowType `yaml:"type" json:"type"`
-	Name          string       `yaml:"name" json:"name"`
-	SubAgents     []string     `yaml:"sub-agents" json:"subAgents"`
-	Description   string       `yaml:"description" json:"description"`
-	MaxIterations int          `yaml:"max-iterations" json:"maxIterations"`
+	ValidateDrawing bool         `yaml:"validate-drawing" json:"validateDrawing"`
+	RepairAgent     string       `yaml:"repair-agent" json:"repairAgent"`
+	Type            WorkflowType `yaml:"type" json:"type"`
+	Name            string       `yaml:"name" json:"name"`
+	SubAgents       []string     `yaml:"sub-agents" json:"subAgents"`
+	Description     string       `yaml:"description" json:"description"`
+	MaxIterations   int          `yaml:"max-iterations" json:"maxIterations"`
 }
 
 type RunnerConfig struct {

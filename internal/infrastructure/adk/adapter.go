@@ -1,6 +1,7 @@
 package adk
 
 import (
+	execution "ai-agent-scaffold-go/internal/domain/agent/runtime"
 	"context"
 	"fmt"
 	"strings"
@@ -8,11 +9,10 @@ import (
 
 	"ai-agent-scaffold-go/internal/domain/agent/model"
 	"ai-agent-scaffold-go/internal/domain/agent/ports"
+	"ai-agent-scaffold-go/internal/domain/drawing"
 	"google.golang.org/adk/plugin"
 	"google.golang.org/adk/plugin/loggingplugin"
 )
-
-const maxToolCallIterations = 4
 
 type Factory struct {
 	sessionCounter atomic.Uint64
@@ -21,14 +21,16 @@ type Factory struct {
 }
 
 type Agent struct {
-	name        string
-	kind        string
-	description string
-	instruction string
-	outputKey   string
-	chatModel   ports.ChatModel
-	router      ports.ToolRouter
-	subAgents   []ports.Agent
+	name            string
+	kind            string
+	description     string
+	instruction     string
+	outputKey       string
+	chatModel       ports.ChatModel
+	router          ports.ToolRouter
+	subAgents       []ports.Agent
+	validateDrawing bool
+	repairAgent     string
 }
 
 type Runner struct {
@@ -94,12 +96,28 @@ func newWorkflowAgent(kind string, config model.AgentWorkflowConfig, subAgents [
 	if strings.TrimSpace(config.Name) == "" {
 		return nil, fmt.Errorf("%s agent name is required", kind)
 	}
+	if config.ValidateDrawing {
+		if kind != "sequential" {
+			return nil, fmt.Errorf("drawing validation requires a sequential workflow")
+		}
+		found := false
+		for _, sub := range subAgents {
+			if a, ok := sub.(*Agent); ok && a.name == config.RepairAgent && a.kind == "llm" {
+				found = true
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("drawing repair-agent %q must reference a direct LLM sub-agent", config.RepairAgent)
+		}
+	}
 	return &Agent{
-		name:        config.Name,
-		kind:        kind,
-		description: config.Description,
-		subAgents:   subAgents,
-		router:      router,
+		name:            config.Name,
+		kind:            kind,
+		description:     config.Description,
+		subAgents:       subAgents,
+		validateDrawing: config.ValidateDrawing,
+		repairAgent:     config.RepairAgent,
+		router:          router,
 	}, nil
 }
 
@@ -150,8 +168,25 @@ func (a *Agent) stream(ctx context.Context, content model.ChatContent, out chan<
 
 func (a *Agent) runLLM(ctx context.Context, content model.ChatContent, vars map[string]string) (string, error) {
 	messages := initialMessages(applyVars(a.instruction, vars), firstText(content))
-	for iter := 0; iter < maxToolCallIterations; iter++ {
-		reply, err := a.chatModel.Generate(ctx, messages)
+	for iter := 0; iter < execution.OptionsFrom(ctx).MaxModelCalls; iter++ {
+		callCtx, cancel, err := execution.ModelContext(ctx)
+		if err != nil {
+			return "", err
+		}
+		reply, err := a.chatModel.Generate(callCtx, messages)
+		if err == nil {
+			err = callCtx.Err()
+		}
+		cancel()
+		if err == nil {
+			size := len(reply.Content)
+			for _, call := range reply.ToolCalls {
+				size += len(call.Arguments) + len(call.Name) + len(call.ID)
+			}
+			if int64(size) > execution.OptionsFrom(ctx).MaxModelBytes {
+				err = execution.ErrSize
+			}
+		}
 		if err != nil {
 			return "", err
 		}
@@ -165,68 +200,20 @@ func (a *Agent) runLLM(ctx context.Context, content model.ChatContent, vars map[
 		}
 		messages = append(messages, toolMessages...)
 	}
-	return "", fmt.Errorf("agent %q exceeded tool-call iteration limit %d", a.name, maxToolCallIterations)
+	return "", execution.ErrBudget
 }
 
 func (a *Agent) streamLLM(ctx context.Context, content model.ChatContent, out chan<- string, vars map[string]string) error {
-	messages := initialMessages(applyVars(a.instruction, vars), firstText(content))
-	for iter := 0; iter < maxToolCallIterations; iter++ {
-		events, errs := a.chatModel.Stream(ctx, messages)
-		var (
-			finalText strings.Builder
-			toolCalls []ports.ChatToolCall
-			done      bool
-		)
-		streamErr := error(nil)
-	streamLoop:
-		for {
-			select {
-			case <-ctx.Done():
-				streamErr = ctx.Err()
-				break streamLoop
-			case ev, ok := <-events:
-				if !ok {
-					break streamLoop
-				}
-				if ev.Done {
-					done = true
-				}
-				if ev.Delta != "" {
-					finalText.WriteString(ev.Delta)
-					select {
-					case out <- ev.Delta:
-					case <-ctx.Done():
-						streamErr = ctx.Err()
-						break streamLoop
-					}
-				}
-				if len(ev.ToolCalls) > 0 {
-					toolCalls = append(toolCalls, ev.ToolCalls...)
-				}
-			case err, ok := <-errs:
-				if ok && err != nil {
-					streamErr = err
-				}
-				break streamLoop
-			}
-		}
-		if streamErr != nil {
-			return streamErr
-		}
-		if len(toolCalls) == 0 {
-			if !done {
-				return fmt.Errorf("agent %q stream closed without completion", a.name)
-			}
-			return nil
-		}
-		messages = append(messages, ports.ChatMessage{Role: ports.ChatRoleAssistant, Content: finalText.String(), ToolCalls: toolCalls})
-		toolMessages, err := a.executeToolCalls(ctx, toolCalls)
-		if err != nil {
-			return err
-		}
-		messages = append(messages, toolMessages...)
+	text, err := a.runLLM(ctx, content, vars)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("agent %q exceeded tool-call iteration limit %d", a.name, maxToolCallIterations)
+	select {
+	case out <- text:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (a *Agent) executeToolCalls(ctx context.Context, calls []ports.ChatToolCall) ([]ports.ChatMessage, error) {
@@ -235,7 +222,15 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []ports.ChatToolCall
 	}
 	out := make([]ports.ChatMessage, 0, len(calls))
 	for _, call := range calls {
-		result, err := a.router.CallTool(ctx, call.Name, call.Arguments)
+		toolCtx, cancel := context.WithTimeout(ctx, execution.OptionsFrom(ctx).ToolTimeout)
+		result, err := a.router.CallTool(toolCtx, call.Name, call.Arguments)
+		if err == nil {
+			err = toolCtx.Err()
+		}
+		cancel()
+		if err == nil && int64(len(result)) > execution.OptionsFrom(ctx).MaxToolBytes {
+			err = execution.ErrSize
+		}
 		if err != nil {
 			return nil, fmt.Errorf("tool %q: %w", call.Name, err)
 		}
@@ -264,6 +259,33 @@ func (a *Agent) runSequential(ctx context.Context, content model.ChatContent, va
 		last = text
 		if key := strings.TrimSpace(impl.outputKey); key != "" {
 			scope[key] = text
+		}
+	}
+	if a.validateDrawing {
+		for attempt := 0; ; attempt++ {
+			validationErr := drawing.Validate(last)
+			if validationErr == nil {
+				return last, nil
+			}
+			if attempt >= 2 {
+				return "", fmt.Errorf("drawing validation failed after 2 repairs: %w", validationErr)
+			}
+			var repair *Agent
+			for _, sub := range a.subAgents {
+				if impl, ok := sub.(*Agent); ok && impl.name == a.repairAgent {
+					repair = impl
+					break
+				}
+			}
+			if repair == nil {
+				return "", fmt.Errorf("drawing repair agent %q not found", a.repairAgent)
+			}
+			feedback := firstText(content) + "\nRepair the following candidate XML using the validation error. Return only complete mxfile XML.\nValidation error: " + validationErr.Error() + "\nCandidate XML:\n" + last
+			var err error
+			last, err = repair.runWithVars(ctx, model.ChatContent{Texts: []model.TextPart{{Message: feedback}}}, scope)
+			if err != nil {
+				return "", err
+			}
 		}
 	}
 	return last, nil
@@ -321,19 +343,27 @@ func (r *Runner) CreateSession(userID string) (string, error) {
 	return fmt.Sprintf("%s:%s:%d", r.appName, userID, next), nil
 }
 
-func (r *Runner) Run(userID, sessionID string, content model.ChatContent) ([]string, error) {
+func (r *Runner) Run(ctx context.Context, userID, sessionID string, content model.ChatContent) ([]string, error) {
 	if strings.TrimSpace(userID) == "" || strings.TrimSpace(sessionID) == "" {
 		return nil, fmt.Errorf("user id and session id are required")
 	}
-	if err := r.notifyPlugins(userID, sessionID, content); err != nil {
+	ctx, cancel := execution.EnsureContext(ctx)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := r.notifyPlugins(ctx, userID, sessionID, content); err != nil {
 		return nil, err
 	}
 	impl, ok := r.agent.(*Agent)
 	if !ok {
 		return nil, fmt.Errorf("runner agent %q is not runnable", r.agent.Name())
 	}
-	output, err := impl.run(context.Background(), content)
+	output, err := impl.run(ctx, content)
 	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if output == "" {
@@ -342,38 +372,35 @@ func (r *Runner) Run(userID, sessionID string, content model.ChatContent) ([]str
 	return []string{output}, nil
 }
 
-func (r *Runner) Stream(userID, sessionID string, content model.ChatContent) (<-chan string, <-chan error) {
-	outputs := make(chan string, 8)
+func (r *Runner) Stream(ctx context.Context, userID, sessionID string, content model.ChatContent) (<-chan string, <-chan error) {
+	outputs := make(chan string, 1)
 	errs := make(chan error, 1)
 	go func() {
 		defer close(outputs)
 		defer close(errs)
-		if strings.TrimSpace(userID) == "" || strings.TrimSpace(sessionID) == "" {
-			errs <- fmt.Errorf("user id and session id are required")
-			return
-		}
-		if err := r.notifyPlugins(userID, sessionID, content); err != nil {
+		result, err := r.Run(ctx, userID, sessionID, content)
+		if err != nil {
 			errs <- err
 			return
 		}
-		impl, ok := r.agent.(*Agent)
-		if !ok {
-			errs <- fmt.Errorf("runner agent %q is not runnable", r.agent.Name())
-			return
-		}
-		if err := impl.stream(context.Background(), content, outputs); err != nil {
-			errs <- err
+		for _, text := range result {
+			select {
+			case outputs <- text:
+			case <-ctx.Done():
+				errs <- ctx.Err()
+				return
+			}
 		}
 	}()
 	return outputs, errs
 }
 
-func (r *Runner) notifyPlugins(userID, sessionID string, content model.ChatContent) error {
+func (r *Runner) notifyPlugins(ctx context.Context, userID, sessionID string, content model.ChatContent) error {
 	for _, item := range r.plugins {
-		if err := item.OnUserMessage(context.Background(), r.appName, userID, sessionID, r.agent, content); err != nil {
+		if err := item.OnUserMessage(ctx, r.appName, userID, sessionID, r.agent, content); err != nil {
 			return fmt.Errorf("plugin %q on user message: %w", item.Name(), err)
 		}
-		if err := item.BeforeAgent(context.Background(), r.appName, userID, sessionID, r.agent); err != nil {
+		if err := item.BeforeAgent(ctx, r.appName, userID, sessionID, r.agent); err != nil {
 			return fmt.Errorf("plugin %q before agent: %w", item.Name(), err)
 		}
 	}

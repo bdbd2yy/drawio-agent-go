@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ai-agent-scaffold-go/internal/domain/agent/ports"
+	execution "ai-agent-scaffold-go/internal/domain/agent/runtime"
 )
 
 type OpenAIClient struct {
@@ -49,7 +50,7 @@ func (c *OpenAIClient) Generate(ctx context.Context, messages []ports.ChatMessag
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := execution.ReadBounded(resp.Body, execution.OptionsFrom(ctx).MaxModelBytes*6+65536)
 	if err != nil {
 		return ports.ChatReply{}, fmt.Errorf("openai read body: %w", err)
 	}
@@ -73,6 +74,9 @@ func (c *OpenAIClient) Generate(ctx context.Context, messages []ports.ChatMessag
 			Arguments: tc.Function.Arguments,
 		})
 	}
+	if err := checkReplySize(ctx, reply); err != nil {
+		return ports.ChatReply{}, err
+	}
 	return reply, nil
 }
 
@@ -95,32 +99,41 @@ func (c *OpenAIClient) Stream(ctx context.Context, messages []ports.ChatMessage,
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			raw, _ := io.ReadAll(resp.Body)
+			raw, _ := execution.ReadBounded(resp.Body, execution.OptionsFrom(ctx).MaxModelBytes*6+65536)
 			errs <- fmt.Errorf("openai upstream %d: %s", resp.StatusCode, truncate(string(raw), 400))
 			return
 		}
 
 		toolCallBuf := map[int]*ports.ChatToolCall{}
-		reader := bufio.NewReader(resp.Body)
-		for {
-			line, err := reader.ReadString('\n')
-			if err != nil {
-				if err == io.EOF {
-					emitToolCalls(events, toolCallBuf)
-					events <- ports.ChatStreamEvent{Done: true}
-					return
-				}
-				errs <- fmt.Errorf("openai stream read: %w", err)
-				return
+		scanner := bufio.NewScanner(io.LimitReader(resp.Body, execution.OptionsFrom(ctx).MaxModelBytes*6+65537))
+		scanner.Buffer(make([]byte, 4096), int(execution.OptionsFrom(ctx).MaxModelBytes*6+65536))
+		var size int64
+		send := func(event ports.ChatStreamEvent) bool {
+			select {
+			case events <- event:
+				return true
+			case <-ctx.Done():
+				errs <- ctx.Err()
+				return false
 			}
-			line = strings.TrimRight(line, "\r\n")
-			if line == "" || !strings.HasPrefix(line, "data:") {
+		}
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if !strings.HasPrefix(line, "data:") {
 				continue
 			}
 			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if payload == "[DONE]" {
-				emitToolCalls(events, toolCallBuf)
-				events <- ports.ChatStreamEvent{Done: true}
+				calls := make([]ports.ChatToolCall, 0, len(toolCallBuf))
+				for i := 0; i < len(toolCallBuf); i++ {
+					if call := toolCallBuf[i]; call != nil {
+						calls = append(calls, *call)
+					}
+				}
+				if len(calls) > 0 && !send(ports.ChatStreamEvent{ToolCalls: calls}) {
+					return
+				}
+				send(ports.ChatStreamEvent{Done: true})
 				return
 			}
 			var chunk openaiStreamChunk
@@ -132,48 +145,47 @@ func (c *OpenAIClient) Stream(ctx context.Context, messages []ports.ChatMessage,
 				continue
 			}
 			delta := chunk.Choices[0].Delta
-			if delta.Content != "" {
-				select {
-				case events <- ports.ChatStreamEvent{Delta: delta.Content}:
-				case <-ctx.Done():
-					errs <- ctx.Err()
+			size += int64(len(delta.Content))
+			for _, tc := range delta.ToolCalls {
+				size += int64(len(tc.ID) + len(tc.Function.Name) + len(tc.Function.Arguments))
+				if tc.Index < 0 || tc.Index > 1024 {
+					errs <- fmt.Errorf("invalid tool index")
 					return
 				}
+				if toolCallBuf[tc.Index] == nil {
+					toolCallBuf[tc.Index] = &ports.ChatToolCall{}
+				}
+				call := toolCallBuf[tc.Index]
+				call.ID += tc.ID
+				call.Name += tc.Function.Name
+				call.Arguments += tc.Function.Arguments
 			}
-			for _, tc := range delta.ToolCalls {
-				current, ok := toolCallBuf[tc.Index]
-				if !ok {
-					current = &ports.ChatToolCall{}
-					toolCallBuf[tc.Index] = current
-				}
-				if tc.ID != "" {
-					current.ID = tc.ID
-				}
-				if tc.Function.Name != "" {
-					current.Name = tc.Function.Name
-				}
-				if tc.Function.Arguments != "" {
-					current.Arguments += tc.Function.Arguments
-				}
+			if size > execution.OptionsFrom(ctx).MaxModelBytes {
+				errs <- execution.ErrSize
+				return
+			}
+			if delta.Content != "" && !send(ports.ChatStreamEvent{Delta: delta.Content}) {
+				return
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			errs <- fmt.Errorf("openai stream read: %w", err)
+			return
+		}
+		errs <- fmt.Errorf("openai stream closed without completion")
 	}()
 	return events, errs
 }
 
-func emitToolCalls(events chan<- ports.ChatStreamEvent, buf map[int]*ports.ChatToolCall) {
-	if len(buf) == 0 {
-		return
+func checkReplySize(ctx context.Context, reply ports.ChatReply) error {
+	size := len(reply.Content)
+	for _, call := range reply.ToolCalls {
+		size += len(call.ID) + len(call.Name) + len(call.Arguments)
 	}
-	calls := make([]ports.ChatToolCall, 0, len(buf))
-	for i := 0; i < len(buf); i++ {
-		if call, ok := buf[i]; ok && call != nil {
-			calls = append(calls, *call)
-		}
+	if int64(size) > execution.OptionsFrom(ctx).MaxModelBytes {
+		return execution.ErrSize
 	}
-	if len(calls) > 0 {
-		events <- ports.ChatStreamEvent{ToolCalls: calls}
-	}
+	return nil
 }
 
 func (c *OpenAIClient) do(ctx context.Context, body []byte) (*http.Response, error) {

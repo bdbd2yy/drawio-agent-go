@@ -15,3 +15,9 @@
 # Frontend artefacts
 frontend/.next/
 frontend/node_modules/
+
+# Local agent instructions and planning documents
+/AGENTS.md
+/CONTEXT.md
+/docs/agent-*.md
+/docs/adr/0001-deterministic-drawing-validation.md
